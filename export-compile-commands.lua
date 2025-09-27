@@ -1,10 +1,32 @@
 local p = premake
-
 p.modules.export_compile_commands = {}
 local m = p.modules.export_compile_commands
 
 local workspace = p.workspace
 local project = p.project
+
+--
+-- Configuration Constants
+--
+local CPP_STANDARD = "c++17"
+local IGNORE_FOLDERS = { "packages", "vendor", "build" }
+local ADDITIONAL_COMMANDS = { "-Wall", "-Wextra" }
+
+
+function printTable(tbl, indent)
+    indent = indent or 0
+    local prefix = string.rep("  ", indent)
+    for k, v in pairs(tbl) do
+        if type(v) == "table" then
+            p.w(prefix .. tostring(k) .. " = {")
+            printTable(v, indent + 1)
+            p.w(prefix .. "}")
+        else
+            p.w(prefix .. tostring(k) .. " = " .. tostring(v))
+        end
+    end
+end
+
 
 function m.getToolset(cfg)
   return p.tools[cfg.toolset or 'gcc']
@@ -42,11 +64,16 @@ function m.getDependenciesPath(prj, cfg, node)
 end
 
 function m.getFileFlags(prj, cfg, node)
-  return table.join(m.getCommonFlags(cfg), {
-    '-o', m.getObjectPath(prj, cfg, node),
-    '-MF', m.getDependenciesPath(prj, cfg, node),
-    '-c', node.abspath
-  })
+  return table.join(
+    m.getCommonFlags(cfg),
+    ADDITIONAL_COMMANDS, -- Use the additional commands list
+    {
+      '-std=' .. CPP_STANDARD, -- Use the C++ standard constant
+      '-o', m.getObjectPath(prj, cfg, node),
+      '-MF', m.getDependenciesPath(prj, cfg, node),
+      '-c', node.abspath
+    }
+  )
 end
 
 function m.generateCompileCommand(prj, cfg, node)
@@ -58,6 +85,12 @@ function m.generateCompileCommand(prj, cfg, node)
 end
 
 function m.includeFile(prj, node, depth)
+  -- Ignore files inside any of the specified folders
+  for _, folder in ipairs(IGNORE_FOLDERS) do
+    if string.find(node.abspath, folder, 1, true) then
+      return false -- If found in any ignored folder, exclude it
+    end
+  end
   return path.iscppfile(node.abspath)
 end
 
@@ -92,31 +125,35 @@ local function execute()
     for prj in workspace.eachproject(wks) do
       for cfg in project.eachconfig(prj) do
         local cfgKey = string.format('%s', cfg.shortname)
-        if not cfgCmds[cfgKey] then
-          cfgCmds[cfgKey] = {}
+        if(cfg.shortname == "release") then
+          if not cfgCmds[cfgKey] then
+            cfgCmds[cfgKey] = {}
+          end
+          cfgCmds[cfgKey] = table.join(cfgCmds[cfgKey], m.getProjectCommands(prj, cfg))
         end
-        cfgCmds[cfgKey] = table.join(cfgCmds[cfgKey], m.getProjectCommands(prj, cfg))
       end
     end
     for cfgKey,cmds in pairs(cfgCmds) do
-      local outfile = string.format('compile_commands/%s.json', cfgKey)
+      local outfile ="compile_commands.json"
       p.generate(wks, outfile, function(wks)
         p.w('[')
         for i = 1, #cmds do
           local item = cmds[i]
-          local command = string.format([[
-          {
-            "directory": "%s",
-            "file": "%s",
-            "command": "%s"
-          }]],
-          item.directory,
-          item.file,
+          -- Format the JSON block with 3-space indentation
+          local command_block = string.format([[   {
+      "directory": "%s",
+      "file": "%s",
+      "command": "%s"
+   }]],
+          item.directory:gsub('\\', '\\\\'),
+          item.file:gsub('\\', '\\\\'),
           item.command:gsub('\\', '\\\\'):gsub('"', '\\"'))
-          if i > 1 then
-            p.w(',')
+
+          -- Add a comma to all entries except the last one
+          if i < #cmds then
+            command_block = command_block .. ','
           end
-          p.w(command)
+          p.w(command_block)
         end
         p.w(']')
       end)
@@ -125,7 +162,7 @@ local function execute()
 end
 
 newaction {
-  trigger = 'export-compile-commands',
+  trigger = 'compiledb',
   description = 'Export compiler commands in JSON Compilation Database Format',
   execute = execute
 }
